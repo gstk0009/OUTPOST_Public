@@ -157,7 +157,13 @@ public class GameCycleDirector : MonoBehaviour
     {
         Phase = CyclePhase.Extraction;
         PhaseTimeRemaining = 0f;
-        bool completed = extractionController == null || await extractionController.PlayExtractionAsync(playerHealth, token);
+        if (extractionController == null)
+        {
+            FailShift("HELICOPTER EXTRACTION UNAVAILABLE");
+            return;
+        }
+
+        bool completed = await extractionController.PlayExtractionAsync(playerHealth, token);
         if (!completed || token.IsCancellationRequested) return;
         Phase = CyclePhase.Victory;
         GameSessionState.Finish(true, "HELICOPTER EXTRACTION");
