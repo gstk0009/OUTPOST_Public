@@ -49,7 +49,7 @@ public class HelicopterExtractionController : MonoBehaviour
 
     public async UniTask<bool> PlayExtractionAsync(PlayerHealth player, CancellationToken token)
     {
-        if (helicopter == null || landingPoint == null || departurePoint == null) return true;
+        if (helicopter == null || landingPoint == null || departurePoint == null) return false;
         _running = true;
         if (approachPoint != null) helicopter.SetPositionAndRotation(approachPoint.position, approachPoint.rotation);
         helicopter.gameObject.SetActive(true);
