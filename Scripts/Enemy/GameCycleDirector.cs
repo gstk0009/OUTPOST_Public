@@ -55,6 +55,7 @@ public class GameCycleDirector : MonoBehaviour
         if (objectiveBeacon != null) objectiveBeacon.gameObject.SetActive(false);
         waveSpawner.autoStart = false;
         waveSpawner.WaveCompleted += OnWaveCompleted;
+        waveSpawner.WaveFailed += FailShift;
         StartFlow(PrepareNextCycleAsync);
     }
 
@@ -155,16 +156,48 @@ public class GameCycleDirector : MonoBehaviour
 
     async UniTask ExtractionAsync(CancellationToken token)
     {
+        if (token.IsCancellationRequested || Phase is CyclePhase.Failed or CyclePhase.Victory) return;
         Phase = CyclePhase.Extraction;
         PhaseTimeRemaining = 0f;
         if (extractionController == null)
         {
-            FailShift("HELICOPTER EXTRACTION UNAVAILABLE");
+            FailShift("EXTRACTION CONTROLLER MISSING");
             return;
         }
 
-        bool completed = await extractionController.PlayExtractionAsync(playerHealth, token);
-        if (!completed || token.IsCancellationRequested) return;
+        bool completed;
+        try
+        {
+            completed = await extractionController.PlayExtractionAsync(playerHealth, token);
+        }
+        catch (System.OperationCanceledException) when (token.IsCancellationRequested)
+        {
+            // The flow owner (failure, replacement, or destruction) owns this transition.
+            return;
+        }
+        catch (System.Exception exception)
+        {
+            Debug.LogException(exception, this);
+            if (!token.IsCancellationRequested) FailShift("EXTRACTION ERROR");
+            return;
+        }
+
+        if (token.IsCancellationRequested || Phase != CyclePhase.Extraction) return;
+        if (playerHealth == null || playerHealth.IsDead)
+        {
+            FailShift("PLAYER LOST");
+            return;
+        }
+        if (defendObjective != null && defendObjective.IsDestroyed)
+        {
+            FailShift("GENERATOR DESTROYED");
+            return;
+        }
+        if (!completed)
+        {
+            FailShift("EXTRACTION FAILED");
+            return;
+        }
         Phase = CyclePhase.Victory;
         GameSessionState.Finish(true, "HELICOPTER EXTRACTION");
     }
@@ -174,13 +207,16 @@ public class GameCycleDirector : MonoBehaviour
         PhaseTimeRemaining = duration;
         while (PhaseTimeRemaining > 0f)
         {
+            if (token.IsCancellationRequested) return;
             await UniTask.Yield(PlayerLoopTiming.Update);
+            if (token.IsCancellationRequested) return;
             PhaseTimeRemaining = Mathf.Max(0f, PhaseTimeRemaining - Time.deltaTime);
         }
     }
 
     void FailShift(string reason)
     {
+        if (Phase is CyclePhase.Failed or CyclePhase.Victory) return;
         Phase = CyclePhase.Failed;
         PhaseTimeRemaining = 0f;
         _flowCts?.Cancel();
@@ -191,6 +227,7 @@ public class GameCycleDirector : MonoBehaviour
     void OnDestroy()
     {
         if (waveSpawner != null) waveSpawner.WaveCompleted -= OnWaveCompleted;
+        if (waveSpawner != null) waveSpawner.WaveFailed -= FailShift;
         _flowCts?.Cancel();
         _flowCts?.Dispose();
     }

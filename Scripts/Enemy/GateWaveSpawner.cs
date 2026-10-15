@@ -27,6 +27,7 @@ public class GateWaveSpawner : MonoBehaviour
     public bool BossActive { get; private set; }
     public event Action WaveStarted;
     public event Action WaveCompleted;
+    public event Action<string> WaveFailed;
     public event Action<Vector3, float> EnemyKilled;
 
     private readonly List<EnemyHealth> _alive = new();
@@ -90,7 +91,12 @@ public class GateWaveSpawner : MonoBehaviour
 
     public void StartWave()
     {
-        if (_started || _sources == null || _sources.Length == 0 || spawnPoints == null || spawnPoints.Length == 0) return;
+        if (_started) return;
+        if (_sources == null || _sources.Length == 0 || spawnPoints == null || spawnPoints.Length == 0)
+        {
+            FailWave("SPAWN CONFIGURATION MISSING");
+            return;
+        }
         _started = true;
         _spawnFinished = false;
         _spawnedCount = 0;
@@ -110,7 +116,11 @@ public class GateWaveSpawner : MonoBehaviour
         {
             Transform point = await FindHiddenSpawnPointAsync(token);
             if (token.IsCancellationRequested) return;
-            SpawnWalker(i, point);
+            if (point == null || !SpawnWalker(i, point))
+            {
+                FailWave("NO VALID SPAWN POINT");
+                return;
+            }
             int burstSize = _waveDefinition != null ? Mathf.Max(1, _waveDefinition.burstSize) : 1;
             float delay = _waveDefinition != null && (i + 1) % burstSize == 0
                 ? _waveDefinition.burstPause
@@ -186,21 +196,26 @@ public class GateWaveSpawner : MonoBehaviour
 
     Transform SelectSpawnPoint(bool hiddenOnly)
     {
+        if (spawnPoints == null || spawnPoints.Length == 0) return null;
         Camera camera = Camera.main;
-        Transform player = camera != null ? camera.transform : null;
+        // Without the player camera neither distance nor hiddenness can be verified.
+        if (camera == null) return null;
+        Transform player = camera.transform;
         List<Transform> preferredCandidates = new();
         Transform best = null;
         Transform closestFallback = null;
         float bestScore = float.MaxValue;
         float closestFallbackDistance = float.MaxValue;
+        int startCursor = _spawnPointCursor;
         for (int offset = 0; offset < spawnPoints.Length; offset++)
         {
-            int index = (_spawnPointCursor + offset) % spawnPoints.Length;
+            int index = (startCursor + offset) % spawnPoints.Length;
             Transform point = spawnPoints[index];
             if (point == null) continue;
-            float distance = player != null ? Vector3.Distance(player.position, point.position) : minimumSpawnDistance;
+            Vector3 position = GetSpawnPosition(point);
+            float distance = Vector3.Distance(player.position, position);
             if (distance < minimumSpawnDistance) continue;
-            bool visible = camera != null && IsVisibleFromCamera(camera, point.position + Vector3.up);
+            bool visible = IsVisibleFromCamera(camera, position + Vector3.up);
             if (hiddenOnly && visible) continue;
 
             if (distance < closestFallbackDistance)
@@ -216,18 +231,18 @@ public class GateWaveSpawner : MonoBehaviour
             {
                 best = point;
                 bestScore = score;
-                _spawnPointCursor = (index + 1) % spawnPoints.Length;
             }
         }
         if (preferredCandidates.Count > 0)
         {
             Transform selected = preferredCandidates[_spawnPointCursor % preferredCandidates.Count];
-            _spawnPointCursor = (_spawnPointCursor + 1) % Mathf.Max(1, spawnPoints.Length);
+            _spawnPointCursor = (Array.IndexOf(spawnPoints, selected) + 1) % spawnPoints.Length;
             return selected;
         }
-        if (best != null) return best;
-        if (closestFallback != null) return closestFallback;
-        return spawnPoints[_spawnPointCursor++ % spawnPoints.Length];
+        Transform fallback = best != null ? best : closestFallback;
+        if (fallback != null) _spawnPointCursor = (Array.IndexOf(spawnPoints, fallback) + 1) % spawnPoints.Length;
+        if (fallback != null) return fallback;
+        return null;
     }
 
     static bool IsVisibleFromCamera(Camera camera, Vector3 worldPosition)
@@ -240,11 +255,18 @@ public class GateWaveSpawner : MonoBehaviour
         return !Physics.Raycast(origin, direction.normalized, direction.magnitude, ~0, QueryTriggerInteraction.Ignore);
     }
 
-    void SpawnWalker(int index, Transform point)
+    static Vector3 GetSpawnPosition(Transform point)
     {
-        if (point == null) return;
         Vector3 position = point.position;
         if (NavMesh.SamplePosition(position, out NavMeshHit hit, 3f, NavMesh.AllAreas)) position = hit.position;
+        return position;
+    }
+
+    bool SpawnWalker(int index, Transform point)
+    {
+        if (point == null || Camera.main == null) return false;
+        Vector3 position = GetSpawnPosition(point);
+        if (Vector3.Distance(Camera.main.transform.position, position) < minimumSpawnDistance) return false;
 
         int archetype = SelectArchetype(index);
         EnemyHealth health = _pools[archetype].Count > 0 ? _pools[archetype].Dequeue() : CreatePooledEnemy(archetype);
@@ -269,6 +291,7 @@ public class GateWaveSpawner : MonoBehaviour
         _spawnedCount++;
         _alive.Add(health);
         health.Died += OnWalkerDied;
+        return true;
     }
 
     void OnWalkerDied(EnemyHealth health)
@@ -305,6 +328,15 @@ public class GateWaveSpawner : MonoBehaviour
         BossActive = false;
         foreach (EnemyHealth health in _alive.ToArray()) ReleaseEnemy(health);
         _alive.Clear();
+    }
+
+    void FailWave(string reason)
+    {
+        // Exhausted retries are a terminal configuration failure, never a fake clear
+        // or a wave waiting forever for enemies that were not spawned.
+        CancelWave();
+        Debug.LogWarning($"[GateWaveSpawner] {reason}", this);
+        WaveFailed?.Invoke(reason);
     }
 
     void OnDestroy()
