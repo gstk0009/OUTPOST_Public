@@ -49,8 +49,11 @@ public class HelicopterExtractionController : MonoBehaviour
 
     public async UniTask<bool> PlayExtractionAsync(PlayerHealth player, CancellationToken token)
     {
-        if (helicopter == null || landingPoint == null || departurePoint == null) return false;
+        if (token.IsCancellationRequested || player == null || player.IsDead ||
+            helicopter == null || landingPoint == null || departurePoint == null) return false;
         _running = true;
+        try
+        {
         if (approachPoint != null) helicopter.SetPositionAndRotation(approachPoint.position, approachPoint.rotation);
         helicopter.gameObject.SetActive(true);
         engineSource?.Play();
@@ -92,9 +95,13 @@ public class HelicopterExtractionController : MonoBehaviour
             bool holdCancelled = await UniTask.Delay((int)(departureHoldDuration * 1000f), cancellationToken: token).SuppressCancellationThrow();
             if (holdCancelled) return false;
         }
-        _running = false;
-        engineSource?.Stop();
-        return departed;
+        return departed && !token.IsCancellationRequested && player != null && !player.IsDead;
+        }
+        finally
+        {
+            _running = false;
+            if (engineSource != null) engineSource.Stop();
+        }
     }
 
     void ActivateCinematicCamera(PlayerHealth player)
@@ -130,6 +137,7 @@ public class HelicopterExtractionController : MonoBehaviour
         float elapsed = 0f;
         while (elapsed < departureDuration)
         {
+            if (token.IsCancellationRequested || helicopter == null || departurePoint == null) return false;
             elapsed += Time.deltaTime;
             float t = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / Mathf.Max(0.01f, departureDuration)));
             float inverse = 1f - t;
@@ -147,6 +155,7 @@ public class HelicopterExtractionController : MonoBehaviour
             await UniTask.Yield(PlayerLoopTiming.Update);
             if (token.IsCancellationRequested) return false;
         }
+        if (token.IsCancellationRequested || helicopter == null || departurePoint == null) return false;
         helicopter.SetPositionAndRotation(departurePoint.position, departurePoint.rotation);
         return true;
     }
@@ -163,12 +172,14 @@ public class HelicopterExtractionController : MonoBehaviour
         float elapsed = 0f;
         while (elapsed < duration)
         {
+            if (token.IsCancellationRequested || target == null) return false;
             elapsed += Time.deltaTime;
             float t = Mathf.SmoothStep(0f, 1f, Mathf.Clamp01(elapsed / Mathf.Max(0.01f, duration)));
             target.position = Vector3.Lerp(from, to, t);
             await UniTask.Yield(PlayerLoopTiming.Update);
             if (token.IsCancellationRequested) return false;
         }
+        if (token.IsCancellationRequested || target == null) return false;
         target.position = to;
         return true;
     }
